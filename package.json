@@ -3,6 +3,6 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "cd frontend && npm install && vite build"
+    "build": "cd frontend && npm install && npx vite build"
   }
 }
