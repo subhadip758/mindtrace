@@ -15,8 +15,11 @@ from app.api import (
     privacy
 )
 
-# Initialize database schema tables
-Base.metadata.create_all(bind=engine)
+# Safe table creation for serverless environment cold starts
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"Database table creation notice: {e}")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

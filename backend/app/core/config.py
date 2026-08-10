@@ -10,15 +10,18 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
-    # Database: defaults to SQLite for portable dev/testing, supports PostgreSQL
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./mindtrace.db")
+    # On Vercel / serverless environments, standard cwd is read-only; use /tmp/ directory for SQLite if DATABASE_URL is unconfigured
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "sqlite:////tmp/mindtrace.db" if os.getenv("VERCEL") else "sqlite:///./mindtrace.db"
+    )
     
     # AI Providers
-    AI_PROVIDER: str = os.getenv("AI_PROVIDER", "gemini")  # "gemini", "openai"
+    AI_PROVIDER: str = os.getenv("AI_PROVIDER", "gemini")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     
-    # Data Quality & Scientific Integrity Defaults
+    # Data Quality Defaults
     MIN_CORRELATION_OBSERVATIONS: int = 14
     CONFIDENCE_LEVEL: float = 0.95
 
