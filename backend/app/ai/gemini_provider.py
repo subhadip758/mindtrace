@@ -1,134 +1,99 @@
 import json
-import re
-from typing import Dict, Any
-from app.ai.provider_base import AIProvider
+import httpx
+from typing import Dict, Any, List
+from app.ai.provider_base import AIProviderBase
 from app.core.config import settings
 
-class GeminiProvider(AIProvider):
-    def __init__(self):
-        self.api_key = settings.GEMINI_API_KEY
-        self.client = None
-        if self.api_key:
-            try:
-                from google import genai
-                self.client = genai.Client(api_key=self.api_key)
-            except Exception:
-                self.client = None
+class GeminiProvider(AIProviderBase):
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or settings.GEMINI_API_KEY
 
-    def analyze_journal(self, text: str) -> Dict[str, Any]:
-        prompt = f"""
-You are a senior behavioral scientist and psychological researcher assistant for MindTrace.
-Analyze the following user Ecological Momentary Assessment (EMA) reflection entry:
-"{text}"
+    def analyze_journal(self, content: str, mood_tags: List[str], activity_tags: List[str]) -> Dict[str, Any]:
+        if not self.api_key:
+            return self._fallback_analysis(content, mood_tags, activity_tags)
 
-RULES:
-1. Strictly avoid mental health diagnostic claims (NO diagnosing clinical depression, ADHD, PTSD, GAD).
-2. Identify:
-   - Cognitive/Affective Themes (e.g. Executive Overload, Social Cohesion, Academic Pressure)
-   - Emotional Signals (Valence & Arousal cues)
-   - Behavioral Signals (Avoidance Coping, Vigilance, Restorative Rest)
-   - Cognitive Biases (e.g., Catastrophizing, Dichotomous Thinking, Confirmation Bias, Overgeneralization)
-   - Cognitive Load Index (1.0 to 10.0 score)
-3. Return raw JSON strictly matching this schema:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
+        prompt = f"""You are a professional psychological intelligence AI. Analyze the following reflection entry:
+Content: "{content}"
+Mood Tags: {mood_tags}
+Activity Tags: {activity_tags}
+
+Extract psychological signals and return ONLY a valid JSON object matching this schema EXACTLY:
 {{
-  "themes": ["theme1", "theme2"],
+  "summary": "1-2 sentence psychometric reflection summary",
   "emotional_signals": ["signal1", "signal2"],
-  "behavioral_signals": ["behavior1", "behavior2"],
-  "cognitive_biases": ["bias1", "bias2"],
+  "behavioral_signals": ["signal1", "signal2"],
+  "themes": ["theme1", "theme2"],
+  "cognitive_biases": ["Catastrophizing", "Dichotomous Thinking"],
   "cognitive_load_index": 6.5,
-  "confidence": 0.88,
-  "summary": "Objective psychological observation summary.",
-  "safety_flag": false
-}}
-"""
-        if self.client:
-            try:
-                response = self.client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
-                )
-                text_out = response.text
-                json_match = re.search(r"\{.*\}", text_out, re.DOTALL)
-                if json_match:
-                    parsed = json.loads(json_match.group(0))
-                    return parsed
-            except Exception:
-                pass
-                
-        return self._rule_based_analysis(text)
+  "confidence_score": 0.88
+}}"""
 
-    def explain_evidence(self, evidence_data: Dict[str, Any]) -> str:
-        prompt = f"""
-Explain the following psychological single-subject (N-of-1) statistical correlation object for MindTrace:
-{json.dumps(evidence_data)}
+        try:
+            response = httpx.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=12.0
+            )
+            if response.status_code == 200:
+                res_data = response.json()
+                text_out = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                clean_json = text_out.strip()
+                if clean_json.startswith("```json"):
+                    clean_json = clean_json[7:-3].strip()
+                elif clean_json.startswith("```"):
+                    clean_json = clean_json[3:-3].strip()
+                return json.loads(clean_json)
+        except Exception as e:
+            print(f"Gemini REST Provider Error: {e}")
 
-RULES:
-1. Explain what the Spearman rank correlation indicates in psychometric terms.
-2. Emphasize that observational association does NOT prove direct causation.
-3. Keep explanation clear, professional, and grounded in empirical science.
-"""
-        if self.client:
-            try:
-                response = self.client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
-                )
-                return response.text.strip()
-            except Exception:
-                pass
-                
-        metric_a = evidence_data.get("metric_a", "Metric A")
-        metric_b = evidence_data.get("metric_b", "Metric B")
-        rho = evidence_data.get("coefficient", 0.0)
-        n = evidence_data.get("sample_size", 0)
-        direction = "positive monotonic" if rho > 0 else "inverse"
-        return f"Across {n} Ecological Momentary Assessment (EMA) observations, {metric_a} demonstrated a {direction} statistical correlation (Spearman ρ = {rho}) with {metric_b}. Note that observed co-variation does not establish direct causal directionality."
+        return self._fallback_analysis(content, mood_tags, activity_tags)
 
-    def _rule_based_analysis(self, text: str) -> Dict[str, Any]:
-        text_lower = text.lower()
-        themes = []
-        emotional_signals = []
-        behavioral_signals = []
-        cognitive_biases = []
+    def explain_evidence(self, metric_a: str, metric_b: str, rho: float, p_val: float, sample_size: int) -> str:
+        if not self.api_key:
+            return f"Observational co-variation of ρ = {rho} detected between {metric_a} and {metric_b} across {sample_size} paired daily records."
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.api_key}"
+        prompt = f"Explain this statistical association in 2 clear sentences without claiming direct causality: {metric_a} vs {metric_b}, Spearman correlation rho = {rho}, p-value = {p_val}, sample size N = {sample_size}."
+        
+        try:
+            response = httpx.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                res_data = response.json()
+                return res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            print(f"Gemini Explain Error: {e}")
+
+        return f"Observational co-variation of ρ = {rho} detected between {metric_a} and {metric_b} across {sample_size} paired daily records."
+
+    def generate_weekly_report(self, user_summary_data: Dict[str, Any]) -> str:
+        return "Weekly Behavioral Intelligence Synthesis: Active data collection ongoing. Correlations update dynamically as N increases."
+
+    def _fallback_analysis(self, content: str, mood_tags: List[str], activity_tags: List[str]) -> Dict[str, Any]:
+        content_lower = content.lower()
+        
+        biases = []
+        if any(w in content_lower for w in ["always", "never", "ruined", "impossible", "horrible"]):
+            biases.append("Catastrophizing")
+        if any(w in content_lower for w in ["completely", "totally", "perfect", "failure"]):
+            biases.append("Dichotomous Thinking")
+
         cog_load = 5.0
-
-        if any(w in text_lower for w in ["work", "study", "exam", "deadline", "project", "test"]):
-            themes.append("Executive Task Demand")
+        if len(content.split()) > 40:
             cog_load += 1.5
-        if any(w in text_lower for w in ["friend", "family", "social", "party", "meeting"]):
-            themes.append("Interpersonal Connection")
-        if any(w in text_lower for w in ["sleep", "tired", "rest", "bed", "exhausted"]):
-            themes.append("Allostatic Recovery State")
-
-        if any(w in text_lower for w in ["always", "never", "everything", "nothing", "impossible"]):
-            cognitive_biases.append("Dichotomous (All-or-Nothing) Thinking")
-        if any(w in text_lower for w in ["fail", "disaster", "ruined", "horrible", "worst"]):
-            cognitive_biases.append("Catastrophizing")
-
-        if any(w in text_lower for w in ["happy", "good", "great", "energized", "proud", "calm"]):
-            emotional_signals.append("Positive Affective Valence")
-        if any(w in text_lower for w in ["sad", "stressed", "worried", "anxious", "frustrated", "tired"]):
-            emotional_signals.append("High Arousal Negative Affect")
-
-        if any(w in text_lower for w in ["concentrated", "focused", "walk", "exercise", "workout"]):
-            behavioral_signals.append("Adaptive Coping Engagement")
-        if any(w in text_lower for w in ["distracted", "avoided", "scrolled", "procrastinated"]):
-            behavioral_signals.append("Avoidance Behavior")
-
-        if not themes:
-            themes.append("Introspective Reflection")
-        if not emotional_signals:
-            emotional_signals.append("Baseline Affective State")
-        if not behavioral_signals:
-            behavioral_signals.append("General Daily Activity")
-
+        if len(biases) > 0:
+            cog_load += 1.5
+            
         return {
-            "themes": themes,
-            "emotional_signals": emotional_signals,
-            "behavioral_signals": behavioral_signals,
-            "cognitive_biases": cognitive_biases,
-            "cognitive_load_index": min(10.0, cog_load),
-            "confidence": 0.88,
-            "summary": f"EMA entry reveals executive themes of {', '.join(themes)}. Identified affective markers indicate {', '.join(emotional_signals)}.",
-            "safety_flag": False
+            "summary": "Reflection captured and logged into personal psychometric history.",
+            "emotional_signals": mood_tags if mood_tags else ["Reflective"],
+            "behavioral_signals": activity_tags if activity_tags else ["Self-Observation"],
+            "themes": ["Daily Routine", "Mental State"],
+            "cognitive_biases": biases,
+            "cognitive_load_index": min(10.0, round(cog_load, 1)),
+            "confidence_score": 0.90
         }
