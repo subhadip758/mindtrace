@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, EmailStr
 import jwt
 import httpx
+from mangum import Mangum
 
 from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, DateTime, JSON, Text, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -228,15 +229,6 @@ class ExperimentSchema(BaseModel):
     hypothesis: str
     target_metric: str
 
-class ObsSchema(BaseModel):
-    phase: str
-    observation_date: str
-    metric_value: float
-
-class SimulatorSchema(BaseModel):
-    target_metric: str
-    feature_adjustments: Dict[str, float]
-
 # Routes
 @app.get("/")
 @app.get("/api")
@@ -336,7 +328,6 @@ def create_journal(payload: JournalSchema, user: User = Depends(get_current_user
     db.commit()
     db.refresh(entry)
     
-    # Fast heuristic analysis
     biases = []
     c_lower = payload.content.lower()
     if any(w in c_lower for w in ["always", "never", "ruined", "impossible"]): biases.append("Catastrophizing")
@@ -415,3 +406,6 @@ def get_consent():
 def export_data(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     logs = db.query(DailyLog).filter(DailyLog.user_id == user.id).all()
     return {"user": {"email": user.email}, "logs_count": len(logs)}
+
+# Mangum ASGI Adapter for AWS Lambda / Vercel Serverless Function Invocation
+handler = Mangum(app)
