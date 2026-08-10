@@ -1,9 +1,9 @@
 import sys
 import os
 
-# Add backend package directory to Python path
-backend_dir = os.path.join(os.path.dirname(__file__), '..', 'backend')
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
+# Add current api directory to python sys.path
+api_dir = os.path.dirname(__file__)
+if api_dir not in sys.path:
+    sys.path.insert(0, api_dir)
 
 from main import app
