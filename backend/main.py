@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.api import (
@@ -26,6 +28,19 @@ app = FastAPI(
     version=settings.VERSION,
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
+
+# Exception interceptor to prevent FUNCTION_INVOCATION_FAILED on serverless errors
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        err_detail = str(exc) or "Internal Server Error"
+        print("UNHANDLED SERVER ERROR:", traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Server Error: {err_detail}"}
+        )
 
 # Set up CORS middleware for frontend communication
 app.add_middleware(
