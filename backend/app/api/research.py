@@ -1,13 +1,11 @@
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-import pandas as pd
-import numpy as np
-
 from app.core.database import get_db
 from app.models.models import User, ResearchConsent, DailyLog
 from app.schemas.schemas import ResearchConsentSchema
 from app.api.deps import get_current_user
+from app.services.analytics_engine import spearmanr
 
 router = APIRouter()
 
@@ -47,10 +45,6 @@ def update_research_consent(
 def get_research_dashboard(
     db: Session = Depends(get_db)
 ):
-    """
-    Returns aggregated cross-user research statistics across users who explicitly opted in.
-    Protects user identity via pseudonymization & data minimization.
-    """
     opt_in_users = db.query(ResearchConsent).filter(ResearchConsent.opt_in == True).all()
     opt_in_user_ids = [c.user_id for c in opt_in_users]
     
@@ -74,30 +68,30 @@ def get_research_dashboard(
             "message": "Insufficient aggregate observations for statistical publication (minimum N=14 required)."
         }
         
-    data = []
-    for l in logs:
-        data.append({
-            "sleep_duration": l.sleep_duration,
-            "screen_time": l.screen_time,
-            "mood": l.mood,
-            "focus": l.focus
-        })
-    df = pd.DataFrame(data).dropna()
+    metrics = ["sleep_duration", "screen_time", "mood", "focus"]
+    metric_vals = {m: [getattr(l, m) for l in logs if getattr(l, m) is not None] for m in metrics}
     
     corrs = []
-    if len(df) >= 14:
-        corr_matrix = df.corr(method="spearman")
-        for c1 in corr_matrix.columns:
-            for c2 in corr_matrix.columns:
-                if c1 < c2:
-                    val = corr_matrix.loc[c1, c2]
-                    if not np.isnan(val):
-                        corrs.append({
-                            "metric_a": c1,
-                            "metric_b": c2,
-                            "spearman_rho": round(float(val), 2),
-                            "sample_size": len(df)
-                        })
+    for i in range(len(metrics)):
+        for j in range(i + 1, len(metrics)):
+            m1 = metrics[i]
+            m2 = metrics[j]
+            v1 = []
+            v2 = []
+            for l in logs:
+                x = getattr(l, m1)
+                y = getattr(l, m2)
+                if x is not None and y is not None:
+                    v1.append(float(x))
+                    v2.append(float(y))
+            if len(v1) >= 14:
+                rho, p_val = spearmanr(v1, v2)
+                corrs.append({
+                    "metric_a": m1,
+                    "metric_b": m2,
+                    "spearman_rho": round(rho, 2),
+                    "sample_size": len(v1)
+                })
 
     return {
         "total_participants": total_participants,
@@ -113,19 +107,9 @@ def export_research_csv(db: Session = Depends(get_db)):
     
     logs = db.query(DailyLog).filter(DailyLog.user_id.in_(opt_in_user_ids)).all()
     
-    data = []
+    lines = ["date,sleep_duration,sleep_quality,screen_time,mood,energy,focus,productivity"]
     for l in logs:
-        data.append({
-            "date": l.log_date,
-            "sleep_duration": l.sleep_duration,
-            "sleep_quality": l.sleep_quality,
-            "screen_time": l.screen_time,
-            "mood": l.mood,
-            "energy": l.energy,
-            "focus": l.focus,
-            "productivity": l.productivity
-        })
+        lines.append(f"{l.log_date},{l.sleep_duration},{l.sleep_quality},{l.screen_time},{l.mood},{l.energy},{l.focus},{l.productivity}")
         
-    df = pd.DataFrame(data)
-    csv_str = df.to_csv(index=False)
+    csv_str = "\n".join(lines)
     return Response(content=csv_str, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=mindtrace_research_aggregate.csv"})

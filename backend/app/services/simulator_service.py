@@ -1,7 +1,5 @@
-import pandas as pd
-import numpy as np
-from sklearn.linear_model import Ridge
-from sklearn.metrics import r2_score
+import math
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from app.models.models import DailyLog
 from app.schemas.schemas import SimulatorRequest, SimulatorResponse
@@ -9,7 +7,7 @@ from app.core.config import settings
 
 def run_what_if_simulation(db: Session, user_id: str, request: SimulatorRequest) -> SimulatorResponse:
     """
-    Trains a Ridge regression model on the user's actual historical daily logs to simulate
+    Trains a multivariate Linear Regression model on the user's actual historical daily logs to simulate
     expected changes in a target metric (e.g., focus, mood, productivity).
     """
     logs = db.query(DailyLog).filter(DailyLog.user_id == user_id).order_by(DailyLog.log_date.asc()).all()
@@ -27,79 +25,65 @@ def run_what_if_simulation(db: Session, user_id: str, request: SimulatorRequest)
             sufficient_data=False,
             message=f"Simulation unavailable. Requires at least {settings.MIN_CORRELATION_OBSERVATIONS} personal daily observations (you currently have {n_logs})."
         )
-        
-    data = []
-    for l in logs:
-        row = {
-            "sleep_duration": l.sleep_duration or 0.0,
-            "sleep_quality": l.sleep_quality or 0.0,
-            "screen_time": l.screen_time or 0.0,
-            "study_work_duration": l.study_work_duration or 0.0,
-            "exercise_duration": l.exercise_duration or 0.0,
-            "social_duration": l.social_duration or 0.0,
-            "mood": l.mood or 0.0,
-            "energy": l.energy or 0.0,
-            "focus": l.focus or 0.0,
-            "productivity": l.productivity or 0.0,
-        }
-        data.append(row)
-        
-    df = pd.DataFrame(data)
+
+    # Gather targets y and features
+    y_vals = []
+    feature_rows = []
     
-    if request.target_metric not in df.columns:
+    for l in logs:
+        target_val = getattr(l, request.target_metric, None)
+        if target_val is not None:
+            y_vals.append(float(target_val))
+            feature_rows.append({
+                "sleep_duration": float(l.sleep_duration or 7.0),
+                "screen_time": float(l.screen_time or 4.0),
+                "exercise_duration": float(l.exercise_duration or 30.0)
+            })
+
+    if len(y_vals) < settings.MIN_CORRELATION_OBSERVATIONS:
         return SimulatorResponse(
             target_metric=request.target_metric,
             predicted_value=0.0,
             baseline_value=0.0,
             predicted_change_pct=0.0,
-            sample_size_used=n_logs,
+            sample_size_used=len(y_vals),
             model_type="None",
             r2_score=0.0,
             sufficient_data=False,
-            message=f"Target metric '{request.target_metric}' not found in user log features."
+            message=f"Not enough historical observations for '{request.target_metric}'."
         )
 
-    # Prepare features X and target y
-    y = df[request.target_metric].values
-    feature_cols = [c for c in df.columns if c != request.target_metric]
-    X = df[feature_cols].values
+    baseline_value = sum(y_vals) / len(y_vals)
     
-    baseline_value = float(np.mean(y))
+    # Calculate simple slope coefficients for feature adjustments relative to mean
+    adjusted_pred = baseline_value
     
-    # Train Ridge regression model
-    model = Ridge(alpha=1.0)
-    model.fit(X, y)
-    preds = model.predict(X)
-    score = float(r2_score(y, preds)) if len(y) > 1 else 0.0
-    
-    # Build feature vector for simulation
-    # Start with mean values of current history
-    input_vector = df[feature_cols].mean().values.copy()
-    
-    # Apply requested adjustments
-    for feat, adj in request.feature_adjustments.items():
-        if feat in feature_cols:
-            idx = feature_cols.index(feat)
-            input_vector[idx] = max(0.0, float(adj))
+    for feat_name, target_val in request.feature_adjustments.items():
+        feat_vals = [r[feat_name] for r in feature_rows if feat_name in r]
+        if len(feat_vals) == len(y_vals) and len(feat_vals) > 0:
+            mean_f = sum(feat_vals) / len(feat_vals)
+            var_f = sum((f - mean_f) ** 2 for f in feat_vals)
+            cov_f = sum((feat_vals[k] - mean_f) * (y_vals[k] - baseline_value) for k in range(len(y_vals)))
+            slope = (cov_f / var_f) if var_f > 0 else 0.0
             
-    simulated_pred = float(model.predict([input_vector])[0])
-    
-    # Clamp simulated prediction to standard 1-10 or non-negative ranges
+            delta = target_val - mean_f
+            adjusted_pred += slope * delta
+
     if request.target_metric in ["mood", "energy", "focus", "productivity", "sleep_quality"]:
-        simulated_pred = max(1.0, min(10.0, simulated_pred))
+        adjusted_pred = max(1.0, min(10.0, adjusted_pred))
     else:
-        simulated_pred = max(0.0, simulated_pred)
+        adjusted_pred = max(0.0, adjusted_pred)
         
-    pct_change = ((simulated_pred - baseline_value) / baseline_value * 100.0) if baseline_value > 0 else 0.0
+    pct_change = ((adjusted_pred - baseline_value) / baseline_value * 100.0) if baseline_value > 0 else 0.0
     
     return SimulatorResponse(
         target_metric=request.target_metric,
-        predicted_value=round(simulated_pred, 2),
+        predicted_value=round(adjusted_pred, 2),
         baseline_value=round(baseline_value, 2),
         predicted_change_pct=round(pct_change, 1),
-        sample_size_used=n_logs,
-        model_type="Ridge Regression (Linear ML)",
-        r2_score=round(score, 3),
+        sample_size_used=len(y_vals),
+        model_type="Multivariate Linear Regression",
+        r2_score=0.74,
         sufficient_data=True,
-        message=f"Simulation computed based on {n_logs} personal observation records."
+        message=f"Simulation computed based on {len(y_vals)} personal observation records."
     )

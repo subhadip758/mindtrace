@@ -1,9 +1,39 @@
-import numpy as np
-from scipy import stats
-from typing import Dict, Any, Optional
+import math
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from app.models.models import Experiment, ExperimentObservation, ExperimentResult, DailyLog
 from app.schemas.schemas import ExperimentCreate
+
+def mean_and_std(values: List[float]) -> tuple[float, float]:
+    n = len(values)
+    if n == 0:
+        return 0.0, 0.0
+    m = sum(values) / n
+    if n == 1:
+        return m, 0.0
+    var = sum((x - m) ** 2 for x in values) / (n - 1)
+    return m, math.sqrt(var)
+
+def welch_ttest(sample1: List[float], sample2: List[float]) -> float:
+    """Computes Welch's t-test p-value approximation."""
+    n1, n2 = len(sample1), len(sample2)
+    m1, s1 = mean_and_std(sample1)
+    m2, s2 = mean_and_std(sample2)
+    
+    if n1 < 2 or n2 < 2 or (s1 == 0 and s2 == 0):
+        return 1.0
+        
+    se1 = (s1 ** 2) / n1
+    se2 = (s2 ** 2) / n2
+    se_diff = math.sqrt(se1 + se2)
+    
+    if se_diff == 0:
+        return 1.0
+        
+    t_stat = (m1 - m2) / se_diff
+    # Normal approximation p-value
+    p_val = 2 * (1 - 0.5 * (1 + math.erf(abs(t_stat) / math.sqrt(2))))
+    return round(p_val, 4)
 
 def create_experiment(db: Session, user_id: str, payload: ExperimentCreate) -> Experiment:
     exp = Experiment(
@@ -44,22 +74,15 @@ def compute_experiment_results(db: Session, experiment_id: str) -> Optional[Expe
     i_n = len(i_vals)
     
     if b_n == 0 or i_n == 0:
-        # Not enough observation pairs across both phases yet
         return None
         
-    b_mean = float(np.mean(b_vals))
-    b_std = float(np.std(b_vals, ddof=1)) if b_n > 1 else 0.0
-    
-    i_mean = float(np.mean(i_vals))
-    i_std = float(np.std(i_vals, ddof=1)) if i_n > 1 else 0.0
+    b_mean, b_std = mean_and_std(b_vals)
+    i_mean, i_std = mean_and_std(i_vals)
     
     pct_change = ((i_mean - b_mean) / b_mean * 100.0) if b_mean != 0 else 0.0
     
-    p_val = None
-    if b_n >= 3 and i_n >= 3:
-        t_stat, p_val = stats.ttest_ind(b_vals, i_vals, equal_var=False)
-        p_val = float(p_val) if not np.isnan(p_val) else None
-        
+    p_val = welch_ttest(b_vals, i_vals) if (b_n >= 2 and i_n >= 2) else None
+    
     direction = "higher" if i_mean > b_mean else ("lower" if i_mean < b_mean else "changed")
     explanation = f"During the intervention phase ({i_n} observations), average reported {exp.target_metric} was {round(i_mean, 2)} ± {round(i_std, 2)}, compared to baseline ({b_n} observations) of {round(b_mean, 2)} ± {round(b_std, 2)} ({round(pct_change, 1)}% {direction})."
     limitation = "Results describe observed differences during this experiment period. External confounding factors may have contributed to changes."
@@ -75,7 +98,7 @@ def compute_experiment_results(db: Session, experiment_id: str) -> Optional[Expe
     res.intervention_std = round(i_std, 2)
     res.intervention_n = i_n
     res.pct_change = round(pct_change, 1)
-    res.p_value = round(p_val, 4) if p_val is not None else None
+    res.p_value = p_val
     res.explanation = explanation
     res.limitation_notice = limitation
     
