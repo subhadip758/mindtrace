@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./mindtrace.db
+      - SECRET_KEY=mindtrace_production_secret_key_change_me
+      - AI_PROVIDER=gemini
+    volumes:
+      - ./data:/app/backend/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mindtrace_db
+    environment:
+      POSTGRES_USER: mindtrace
+      POSTGRES_PASSWORD: mindtrace_password
+      POSTGRES_DB: mindtrace_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
